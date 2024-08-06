@@ -12,19 +12,16 @@ stop <- readLines("stopwords.txt") |>
 funct <- c("DET", "PRON", "ADP", "CCONJ", "SCONJ", "AUX", "PART", "PUNCT", "SYM", "X", "INTJ", "SPACE", "NUM")
 
 do_parse <- function(text) {
-  spacy_parse(text) |> 
-    filter(!lemma %in% stop) |> # filter(!pos %in% funct)|>
+  str_replace_all(text, regex("\\W+"), " ") |> str_squish() |> spacy_parse() |> 
+    filter(!lemma %in% stop) |> 
     pull(lemma) |>
-    str_c(collapse = " ")
+    str_c(collapse = " ") |> str_replace_all("leave", "left") |> str_replace_all("kneeling", "kneel")
 }
 
-do_parse("an apple went away")
 location <- "test_data"
 
 do_write <- function(gameId, tangram, data) {
-  # loc <- str_c(df$gameId,"_", df$tangram,".tsv")
   loc <- str_c(gameId, "_", tangram, ".tsv")
-  # df %>% ungroup() |> select(data) |>
   unnest(data) |> write_tsv(here(location, loc), col_names = F)
 }
 
@@ -38,8 +35,7 @@ complete_only <- foo |>
   filter(n == 72)
 
 selected <- foo |>
-  filter(numPlayers == 4) |> # filter(gameId=="hYBwiiFBSBi9ySwpJ") |>
-  # filter(target=="/experiment/tangram_A.png") |>
+  filter(numPlayers == 4) |> 
   inner_join(complete_only |> select(gameId)) |>
   filter(!is.chitchat) |>
   mutate(tangram = str_sub(target, -5, -5)) |>
@@ -69,7 +65,7 @@ do_combine <- function(gameId, tangram) {
     unique()
 }
 
-ban_list <- c("look")
+ban_list <- c("look", "face", )
 post_process <- function(phrase) {
   left <- spacy_parse(phrase) |>
     filter(!pos %in% funct) |>
@@ -77,7 +73,6 @@ post_process <- function(phrase) {
   return(nrow(left))
 }
 
-# post_process("this is a test")
 all <- foo |>
   filter(numPlayers == 4) |>
   select(gameId, target) |>
@@ -109,41 +104,12 @@ filtered |>
 # for extracted utterance, mark which ones it's in and nest
 # post-process??
 
-said <- foo |>
-  filter(numPlayers == 4) |>
-  filter(gameId == "hYBwiiFBSBi9ySwpJ") |>
-  filter(target == "/experiment/tangram_A.png") |>
-  inner_join(complete_only |> select(gameId)) |>
-  filter(!is.chitchat) |>
-  mutate(tangram = str_sub(target, -5, -5)) |>
-  # select(gameId, role, spellchecked, tangram) |>
-  select(gameId, tangram, trialNum, repNum, playerId, role, spellchecked) |>
-  rowwise() |>
-  mutate(parse = do_parse(spellchecked))
-
-extracted <- foo |>
-  filter(gameId == "hYBwiiFBSBi9ySwpJ") |>
-  filter(target == "/experiment/tangram_A.png") |>
-  filter(numPlayers == 4) |>
-  select(gameId, target) |>
-  unique() |>
-  inner_join(complete_only |> select(gameId)) |>
-  mutate(tangram = str_sub(target, -5, -5)) |>
-  select(gameId, tangram) |>
-  mutate(words = pmap(list(gameId, tangram), do_combine)) |>
-  unnest(words) |>
-  rowwise() |>
-  mutate(keep = post_process((Words))) |>
-  filter(keep)
 
 do_item <- function(df, phrase) {
   df |>
     filter(str_detect(parse, phrase))
 }
 
-extracted |>
-  mutate(source = list(map_df(Words, ~ do_group(said, .)))) |>
-  unnest(source)
 
 ## at scale-ish
 
@@ -152,41 +118,34 @@ said <- foo |>
   inner_join(complete_only |> select(gameId)) |>
   filter(!is.chitchat) |>
   mutate(tangram = str_sub(target, -5, -5)) |>
-  # select(gameId, role, spellchecked, tangram) |>
   select(gameId, tangram, trialNum, repNum, playerId, role, spellchecked) |>
   rowwise() |>
   mutate(parse = do_parse(spellchecked)) |>
   group_by(gameId, tangram) |>
   nest()
 
-extracted <- foo |>
-  filter(numPlayers == 4) |>
-  select(gameId, target) |>
-  unique() |>
-  inner_join(complete_only |> select(gameId)) |>
-  mutate(tangram = str_sub(target, -5, -5)) |>
-  select(gameId, tangram) |>
-  mutate(words = pmap(list(gameId, tangram), do_combine)) |>
-  unnest(words) |>
-  rowwise() |>
-  mutate(keep = post_process((Words)))
-filter(keep)
-group_by(gameId, tangram) |>
-  nest() |>
-  rename(phrases = data)
 
-extracted_2 <- extracted |>
+extracted <- read_csv(here("4p_result.csv")) |> 
   filter(!is.na(keep)) |>
   filter(keep > 0) |> select(-keep) |> 
   filter(!is.na(Words)) |> 
-  group_by(gameId, tangram) |>
+  group_by(gameId, tangram) |> 
   nest() |>
   rename(phrases = data) |> 
   left_join(said) |> 
-  rowwise() |> 
-  head() |> 
   unnest(phrases) |> 
   rowwise() |> 
-  mutate(source = list(do_item(data,Words)))
+  mutate(source = list(do_item(data,Words))) 
+
+extracted |> select(-data) |> unnest(source) |> write_csv("sourced_4p.csv")
+
+first <- extracted |> select(-data) |> unnest(source) |> group_by(gameId, tangram, Words) |> 
+  summarize(first=min(repNum), last=max(repNum)) |> filter(last==5)
+
+ggplot(first, aes(x=first))+geom_histogram()+facet_wrap(~tangram)
 
 
+last <- extracted |> select(-data) |> unnest(source) |> group_by(gameId, tangram, Words) |> 
+  summarize(first=min(repNum), last=max(repNum)) |> filter(first==0)
+
+ggplot(last, aes(x=last))+geom_histogram()+facet_wrap(~tangram)
